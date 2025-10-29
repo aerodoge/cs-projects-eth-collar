@@ -1,13 +1,13 @@
 # Deribit 仓位监控系统
 
-一个监控 Deribit 交易账户的系统，用于跟踪维持保证金和 ETH 权益水平，并在阈值被突破时提供警报。
+一个监控 Deribit 交易账户的系统，用于跟踪维持保证金和 ETH 权益水平，并将指标推送到 Prometheus 进行监控和告警。
 
 ## 功能特性
 
-- **维持保证金监控**: 当 MM 比率超过 50% 时发出警报，计算达到 30% 目标所需的 ETH 数量
-- **ETH 权益监控**: 当 ETH 权益低于 -70 万美元时发出警报，计算达到 200 ETH 目标所需的 ETH 数量
-- **多种警报方式**: 日志、Webhook 和邮件（邮件功能尚未实现）
-- **可配置阈值**: 所有监控参数都可通过 YAML 配置
+- **维持保证金监控**: 实时监控 MM 比率并推送到 Prometheus
+- **ETH 权益监控**: 监控 ETH 权益数量和美元价值
+- **Prometheus 集成**: 通过 PushGateway 主动推送指标到 Prometheus
+- **可配置监控**: 监控间隔和 Prometheus 端点都可配置
 
 ## 配置说明
 
@@ -22,16 +22,17 @@ deribit:
 
 monitor:
   interval_seconds: 30           # 监控间隔（秒）
-  mm_threshold: 0.5             # 50% MM 阈值触发警报
-  mm_target: 0.3                # 添加 ETH 后的 30% 目标 MM
-  eth_equity_threshold: -700000.0  # -70万美元 ETH 权益阈值
-  eth_equity_target: 200.0         # 目标 ETH 权益
+  account: "default"             # 账户标识
 
-alerts:
-  enabled: true                  # 启用警报
-  methods: ["log", "webhook"]    # 警报方式
-  webhook:
-    url: "https://your-webhook-url.com/alert"  # Webhook 地址
+prometheus:
+  enabled: true                  # 启用 Prometheus 指标推送
+  push_gateway:                  # PushGateway 配置
+    url: "http://localhost:9091" # PushGateway 地址
+    job_name: "deribit-monitor"  # 任务名称
+    instance: "default"          # 实例标识
+    labels:                      # 额外的标签
+      environment: "production"
+      service: "deribit-monitor"
 ```
 
 ## 使用方法
@@ -51,23 +52,43 @@ go build -o monitor .
 ./monitor -config /path/to/your/config.yaml
 ```
 
-## 警报逻辑
+## Prometheus 指标
 
-### 维持保证金警报
-- **触发条件**: 当 MM 比率 > 50%
-- **计算公式**:
-  ```
-  新保证金率 = 0.3
-  0.3 = Current_Total_MM_USD / (Current_Total_Equity_USD + 新增的ETH价值)
-  新增的ETH数量 = 新增的ETH价值 / ETH价格
-  ```
+系统会推送以下指标到 Prometheus：
 
-### ETH 权益警报
-- **触发条件**: 当 ETH equity * ETH spot price < -70万美元
-- **计算公式**:
-  ```
-  新增ETH的数量 = 200 - ETH equity
-  ```
+### 指标列表
+- `deribit_maintenance_margin_ratio{currency="ETH", account="default"}` - 维持保证金比率
+- `deribit_eth_equity{currency="ETH", account="default"}` - ETH 权益数量
+- `deribit_eth_equity_usd{currency="ETH", account="default"}` - ETH 权益美元价值
+- `deribit_total_equity{currency="ETH", account="default"}` - 总权益
+- `deribit_maintenance_margin{currency="ETH", account="default"}` - 维持保证金
+- `deribit_margin_balance{currency="ETH", account="default"}` - 保证金余额
+- `deribit_eth_price_usd{currency="ETH", account="default"}` - ETH 现货价格 (美元)
+- `deribit_metrics_collection_timestamp{currency="ETH", account="default"}` - 指标收集时间戳
+
+### 示例 Prometheus 告警规则
+```yaml
+groups:
+  - name: deribit_alerts
+    rules:
+      - alert: HighMaintenanceMarginRatio
+        expr: deribit_maintenance_margin_ratio > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deribit 维持保证金比率过高"
+          description: "账户 {{ $labels.account }} 的维持保证金比率为 {{ $value | humanizePercentage }}，超过 50% 阈值"
+
+      - alert: LowETHEquity
+        expr: deribit_eth_equity_usd < -700000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deribit ETH 权益过低"
+          description: "账户 {{ $labels.account }} 的 ETH 权益为 ${{ $value | humanize }}，低于 -70万美元阈值"
+```
 
 ## 使用的 API 端点
 
@@ -78,7 +99,7 @@ go build -o monitor .
 
 - **Viper**: 配置管理
 - **Zap**: 结构化日志
-- **Gorilla WebSocket**: 用于潜在的实时更新（未来使用）
+- **Prometheus Client**: 指标收集和推送
 
 ## 项目结构
 
@@ -88,7 +109,7 @@ go build -o monitor .
 ├── pkg/
 │   ├── config/          # 配置管理
 │   ├── deribit/         # Deribit API 客户端
-│   ├── alert/           # 警报系统
+│   ├── metrics/         # Prometheus 指标
 │   ├── monitor/         # 监控逻辑
 │   └── logger/          # 日志设置
 ├── internal/types/      # 类型定义
@@ -103,9 +124,36 @@ go build -o monitor .
 - 考虑使用有限权限的 API 密钥
 - 开发和测试时启用测试网
 
+## 使用示例
+
+### 启动 PushGateway
+```bash
+docker run -p 9091:9091 prom/pushgateway
+```
+
+### 运行监控程序
+```bash
+make run
+```
+
+### 配置 Prometheus
+在 Prometheus 配置文件中添加 PushGateway：
+```yaml
+scrape_configs:
+  - job_name: 'pushgateway'
+    static_configs:
+      - targets: ['localhost:9091']
+    scrape_interval: 30s
+```
+
+### 查看推送的指标
+访问 PushGateway 界面查看推送的指标：
+```
+http://localhost:9091/metrics
+```
+
 ## 当前限制
 
-- ETH 价格当前硬编码为 $3000（应从 API 获取）
-- 邮件警报尚未实现
 - 仅支持单一货币监控（仅 ETH）
-- 无警报历史持久化功能
+- 需要外部 Prometheus 和 Alertmanager 进行告警
+- 如果 ETH 价格 API 失败，会使用备用价格 $3000

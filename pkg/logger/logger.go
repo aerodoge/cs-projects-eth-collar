@@ -2,6 +2,7 @@ package logger
 
 import (
 	"cs-projects-eth-collar/internal/types"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )

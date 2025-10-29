@@ -1,32 +1,26 @@
 deribit:
-  api_key: "YOUR_API_KEY"
-  api_secret: "YOUR_API_SECRET"
+  api_key: "YOUR_API_KEY"        # 您的 API 密钥
+  api_secret: "YOUR_API_SECRET"  # 您的 API 密钥
   base_url: "https://www.deribit.com/api/v2"
-  test_net: false
+  test_net: false                # 设置为 true 使用测试网
 
 monitor:
-  interval_seconds: 30
-  mm_threshold: 0.5        # 50% MM threshold for alert
-  mm_target: 0.3          # 30% target MM after adding ETH
-  eth_equity_threshold: -700000.0  # -0.7m ETH equity threshold
-  eth_equity_target: 200.0         # Target ETH equity
+  interval_seconds: 30           # 监控间隔（秒）
+  account: "default"             # 账户标识
 
-alerts:
-  enabled: true
-  methods: ["log", "webhook"]
-  webhook:
-    url: "https://your-webhook-url.com/alert"
-  email:
-    smtp: "smtp.gmail.com"
-    port: 587
-    username: "your-email@gmail.com"
-    password: "your-password"
-    from: "your-email@gmail.com"
-    to: "alert-recipient@gmail.com"
+prometheus:
+  enabled: true                  # 启用 Prometheus 指标推送
+  push_gateway:                  # PushGateway 配置
+    url: "http://localhost:9091" # PushGateway 地址
+    job_name: "deribit-monitor"  # 任务名称
+    instance: "default"          # 实例标识
+    labels:                      # 额外的标签
+      environment: "production"
+      service: "deribit-monitor"
 
 log:
-  level: "info"
-  file: "monitor.log"
+  level: "info"                  # 日志级别
+  file: "monitor.log"            # 日志文件
 
 
 

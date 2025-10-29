@@ -24,10 +24,6 @@ BUILD_FLAGS = $(LDFLAGS) -o $(BINARY)
 .PHONY: all
 all: clean deps build
 
-# 创建构建目录
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
-
 # 下载依赖
 .PHONY: deps
 deps:
@@ -43,7 +39,8 @@ build:
 
 # 构建生产版本（优化）
 .PHONY: build-prod
-build-prod: $(BUILD_DIR)
+build-prod:
+	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(BUILD_FLAGS) ./cmd/monitor
 	@echo "✅ 生产版本构建完成: $(BINARY)"
 

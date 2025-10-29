@@ -2,38 +2,44 @@ package monitor
 
 import (
 	"cs-projects-eth-collar/internal/types"
-	"cs-projects-eth-collar/pkg/alert"
 	"cs-projects-eth-collar/pkg/deribit"
+	"cs-projects-eth-collar/pkg/metrics"
 	"fmt"
-	"go.uber.org/zap"
-	"math"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
 	config        types.MonitorConfig
 	deribitClient *deribit.Client
-	alertService  *alert.Service
+	metrics       *metrics.Metrics
 	logger        *zap.Logger
 }
 
-func NewService(config types.MonitorConfig, deribitClient *deribit.Client, alertService *alert.Service, logger *zap.Logger) *Service {
+func NewService(config types.MonitorConfig, deribitClient *deribit.Client, metrics *metrics.Metrics, logger *zap.Logger) *Service {
 	return &Service{
 		config:        config,
 		deribitClient: deribitClient,
-		alertService:  alertService,
+		metrics:       metrics,
 		logger:        logger,
 	}
 }
 
 func (s *Service) Start() error {
+	// 确保间隔时间不为 0，设置最小值为 10 秒
+	interval := s.config.Interval
+	if interval <= 0 {
+		s.logger.Warn("Invalid interval, using default 30 seconds", zap.Int("configured_interval", interval))
+		interval = 30
+	}
+
 	s.logger.Info("Starting position monitor",
-		zap.Int("interval_seconds", s.config.Interval),
-		zap.Float64("mm_threshold", s.config.MMThreshold),
-		zap.Float64("eth_equity_threshold", s.config.ETHEquityThreshold),
+		zap.Int("interval_seconds", interval),
+		zap.String("account", s.config.Account),
 	)
 
-	ticker := time.NewTicker(time.Duration(s.config.Interval) * time.Second)
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -52,94 +58,49 @@ func (s *Service) checkPositions() error {
 		return fmt.Errorf("failed to get ETH account summary: %w", err)
 	}
 
+	// 计算指标数据
+	timestamp := time.Now().Unix() // 获取当前时间戳
+
+	// 从 Deribit API 获取 ETH 现货价格
+	ethPriceUSD, err := s.deribitClient.GetIndexPrice("eth")
+	if err != nil {
+		s.logger.Error("Failed to get ETH price, using fallback", zap.Error(err))
+		ethPriceUSD = 3000.0 // 备用价格
+	}
+
+	mmRatio := 0.0 // 维持保证金比率
+	if ethSummary.Equity != 0 {
+		// 计算维持保证金比率 = 维持保证金 / 权益
+		mmRatio = ethSummary.MaintenanceMargin / ethSummary.Equity
+	}
+	ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
+
+	// 记录账户状态信息
 	s.logger.Info("Account status check",
 		zap.String("currency", "ETH"),
+		zap.String("account", s.config.Account),
+		zap.Float64("eth_price_usd", ethPriceUSD),
 		zap.Float64("equity", ethSummary.Equity),
+		zap.Float64("equity_usd", ethEquityUSD),
 		zap.Float64("margin_balance", ethSummary.MarginBalance),
 		zap.Float64("maintenance_margin", ethSummary.MaintenanceMargin),
-	)
-
-	if err := s.checkMaintenanceMargin(ethSummary); err != nil {
-		s.logger.Error("MM check failed", zap.Error(err))
-	}
-
-	if err := s.checkETHEquity(ethSummary); err != nil {
-		s.logger.Error("ETH equity check failed", zap.Error(err))
-	}
-
-	return nil
-}
-
-func (s *Service) checkMaintenanceMargin(summary *types.AccountSummary) error {
-	if summary.Equity == 0 {
-		return fmt.Errorf("equity is zero, cannot calculate MM ratio")
-	}
-
-	mmRatio := summary.MaintenanceMargin / summary.Equity
-
-	s.logger.Info("MM check",
 		zap.Float64("mm_ratio", mmRatio),
-		zap.Float64("threshold", s.config.MMThreshold),
-		zap.Float64("maintenance_margin", summary.MaintenanceMargin),
-		zap.Float64("equity", summary.Equity),
 	)
 
-	if mmRatio > s.config.MMThreshold {
-		ethNeeded := s.calculateETHNeededForMM(summary)
-
-		alert := types.Alert{
-			Type: "MM_THRESHOLD_BREACH",
-			Message: fmt.Sprintf("Maintenance Margin ratio %.2f%% exceeds threshold %.2f%%. Need to add %.6f ETH to reach target %.2f%%",
-				mmRatio*100, s.config.MMThreshold*100, ethNeeded, s.config.MMTarget*100),
-			Currency:     "ETH",
-			CurrentValue: mmRatio,
-			Threshold:    s.config.MMThreshold,
-			Timestamp:    time.Now().Unix(),
-		}
-
-		return s.alertService.SendAlert(alert)
-	}
-
-	return nil
-}
-
-func (s *Service) checkETHEquity(summary *types.AccountSummary) error {
-	ethPriceUSD := 3000.0
-	ethEquityUSD := summary.Equity * ethPriceUSD
-
-	s.logger.Info("ETH equity check",
-		zap.Float64("eth_equity", summary.Equity),
-		zap.Float64("eth_equity_usd", ethEquityUSD),
-		zap.Float64("threshold_usd", s.config.ETHEquityThreshold),
+	// 更新 Prometheus 指标
+	// 将账户数据推送到 Prometheus，供监控和告警使用
+	s.metrics.UpdateAccountMetrics(
+		"ETH",                        // 货币类型
+		s.config.Account,             // 账户标识
+		mmRatio,                      // 维持保证金比率
+		ethSummary.Equity,            // ETH 权益数量
+		ethEquityUSD,                 // ETH 权益美元价值
+		ethSummary.Equity,            // 总权益 (这里与 ETH 权益相同)
+		ethSummary.MaintenanceMargin, // 维持保证金
+		ethSummary.MarginBalance,     // 保证金余额
+		ethPriceUSD,                  // ETH 现货价格
+		timestamp,                    // 时间戳
 	)
 
-	if ethEquityUSD < s.config.ETHEquityThreshold {
-		ethNeeded := s.config.ETHEquityTarget - summary.Equity
-
-		alert := types.Alert{
-			Type: "ETH_EQUITY_THRESHOLD_BREACH",
-			Message: fmt.Sprintf("ETH equity $%.2f below threshold $%.2f. Need to add %.6f ETH to reach target %.2f ETH",
-				ethEquityUSD, s.config.ETHEquityThreshold, ethNeeded, s.config.ETHEquityTarget),
-			Currency:     "ETH",
-			CurrentValue: ethEquityUSD,
-			Threshold:    s.config.ETHEquityThreshold,
-			Timestamp:    time.Now().Unix(),
-		}
-
-		return s.alertService.SendAlert(alert)
-	}
-
 	return nil
-}
-
-func (s *Service) calculateETHNeededForMM(summary *types.AccountSummary) float64 {
-	ethPriceUSD := 3000.0
-
-	targetEquityUSD := summary.MaintenanceMargin / s.config.MMTarget
-	currentEquityUSD := summary.Equity * ethPriceUSD
-
-	additionalEquityNeeded := targetEquityUSD - currentEquityUSD
-	ethNeeded := additionalEquityNeeded / ethPriceUSD
-
-	return math.Max(0, ethNeeded)
 }

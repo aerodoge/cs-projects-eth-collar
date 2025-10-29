@@ -32,9 +32,13 @@ type APIError struct {
 }
 
 func NewClient(config types.DeribitConfig) *Client {
-	baseURL := config.BaseURL
+	var baseURL string
+
+	// 测试网
 	if config.TestNet {
 		baseURL = "https://test.deribit.com/api/v2"
+	} else {
+		baseURL = "https://www.deribit.com/api/v2"
 	}
 
 	return &Client{
@@ -90,6 +94,31 @@ func (c *Client) GetPositions(currency string) ([]interface{}, error) {
 	}
 
 	return response.Result, nil
+}
+
+// GetIndexPrice 获取指数价格 (现货价格)
+func (c *Client) GetIndexPrice(currency string) (float64, error) {
+	endpoint := "/public/get_index_price"
+	params := map[string]interface{}{
+		"index_name": currency + "_usd", // 例如: eth_usd
+	}
+
+	var response struct {
+		Result struct {
+			IndexPrice float64 `json:"index_price"`
+		} `json:"result"`
+		Error *APIError `json:"error"`
+	}
+
+	if err := c.makeRequest("GET", endpoint, params, &response); err != nil {
+		return 0, err
+	}
+
+	if response.Error != nil {
+		return 0, fmt.Errorf("API error: %s (code: %d)", response.Error.Message, response.Error.Code)
+	}
+
+	return response.Result.IndexPrice, nil
 }
 
 func (c *Client) makeRequest(method, endpoint string, params map[string]interface{}, result interface{}) error {

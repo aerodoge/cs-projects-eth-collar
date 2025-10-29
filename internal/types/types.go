@@ -1,45 +1,35 @@
 package types
 
 type Config struct {
-	Deribit DeribitConfig `yaml:"deribit"`
-	Monitor MonitorConfig `yaml:"monitor"`
-	Alerts  AlertsConfig  `yaml:"alerts"`
-	Log     LogConfig     `yaml:"log"`
+	Deribit    DeribitConfig    `yaml:"deribit" mapstructure:"deribit"`
+	Monitor    MonitorConfig    `yaml:"monitor" mapstructure:"monitor"`
+	Prometheus PrometheusConfig `yaml:"prometheus" mapstructure:"prometheus"`
+	Log        LogConfig        `yaml:"log" mapstructure:"log"`
 }
 
 type DeribitConfig struct {
-	APIKey    string `yaml:"api_key"`
-	APISecret string `yaml:"api_secret"`
-	BaseURL   string `yaml:"base_url"`
-	TestNet   bool   `yaml:"test_net"`
+	APIKey    string `yaml:"api_key" mapstructure:"api_key"`
+	APISecret string `yaml:"api_secret" mapstructure:"api_secret"`
+	TestNet   bool   `yaml:"test_net" mapstructure:"test_net"`
 }
 
 type MonitorConfig struct {
-	Interval           int     `yaml:"interval_seconds"`
-	MMThreshold        float64 `yaml:"mm_threshold"`
-	MMTarget           float64 `yaml:"mm_target"`
-	ETHEquityThreshold float64 `yaml:"eth_equity_threshold"`
-	ETHEquityTarget    float64 `yaml:"eth_equity_target"`
+	Interval int    `yaml:"interval_seconds" mapstructure:"interval_seconds"`
+	Account  string `yaml:"account" mapstructure:"account"`
 }
 
-type AlertsConfig struct {
-	Enabled bool          `yaml:"enabled"`
-	Methods []string      `yaml:"methods"`
-	Webhook WebhookConfig `yaml:"webhook"`
-	Email   EmailConfig   `yaml:"email"`
+// PrometheusConfig Prometheus 指标服务配置
+type PrometheusConfig struct {
+	Enabled     bool              `yaml:"enabled" mapstructure:"enabled"`           // 是否启用 Prometheus 指标服务
+	PushGateway PushGatewayConfig `yaml:"push_gateway" mapstructure:"push_gateway"` // PushGateway 配置
 }
 
-type WebhookConfig struct {
-	URL string `yaml:"url"`
-}
-
-type EmailConfig struct {
-	SMTP     string `yaml:"smtp"`
-	Port     int    `yaml:"port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	From     string `yaml:"from"`
-	To       string `yaml:"to"`
+// PushGatewayConfig PushGateway 配置
+type PushGatewayConfig struct {
+	URL      string            `yaml:"url" mapstructure:"url"`           // PushGateway 地址
+	JobName  string            `yaml:"job_name" mapstructure:"job_name"` // 任务名称
+	Instance string            `yaml:"instance" mapstructure:"instance"` // 实例标识
+	Labels   map[string]string `yaml:"labels" mapstructure:"labels"`     // 额外的标签
 }
 
 type LogConfig struct {
@@ -55,13 +45,4 @@ type AccountSummary struct {
 	InitialMargin     float64 `json:"initial_margin"`
 	TotalPL           float64 `json:"total_pl"`
 	SessionUPL        float64 `json:"session_upl"`
-}
-
-type Alert struct {
-	Type         string  `json:"type"`
-	Message      string  `json:"message"`
-	Currency     string  `json:"currency"`
-	CurrentValue float64 `json:"current_value"`
-	Threshold    float64 `json:"threshold"`
-	Timestamp    int64   `json:"timestamp"`
 }
