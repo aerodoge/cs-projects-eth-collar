@@ -2,28 +2,23 @@ package deribit
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"cs-projects-eth-collar/internal/types"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+	"sync"
 	"time"
 )
 
 type Client struct {
-	apiKey     string
-	apiSecret  string
-	baseURL    string
-	httpClient *http.Client
-}
-
-type APIResponse struct {
-	Result interface{} `json:"result"`
-	Error  *APIError   `json:"error"`
+	apiKey         string
+	apiSecret      string
+	baseURL        string
+	httpClient     *http.Client
+	accessToken    string
+	tokenExpiresAt time.Time
+	authMutex      sync.RWMutex
 }
 
 type APIError struct {
@@ -51,6 +46,92 @@ func NewClient(config types.DeribitConfig) *Client {
 	}
 }
 
+func (c *Client) Authenticate() error {
+	c.authMutex.Lock()
+	defer c.authMutex.Unlock()
+
+	// Deribit认证API使用JSON-RPC格式
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "public/auth",
+		"params": map[string]interface{}{
+			"grant_type":    "client_credentials",
+			"client_id":     c.apiKey,
+			"client_secret": c.apiSecret,
+		},
+		"id": 1,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal auth request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create auth request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("auth HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read auth response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("auth HTTP error %d: %s", resp.StatusCode, string(responseBody))
+	}
+
+	var authResponse struct {
+		Result struct {
+			AccessToken string `json:"access_token"`
+			ExpiresIn   int64  `json:"expires_in"`
+		} `json:"result"`
+		Error *APIError `json:"error"`
+	}
+
+	if err := json.Unmarshal(responseBody, &authResponse); err != nil {
+		return fmt.Errorf("failed to unmarshal auth response: %w", err)
+	}
+
+	if authResponse.Error != nil {
+		return fmt.Errorf("authentication API error: %s (code: %d)", authResponse.Error.Message, authResponse.Error.Code)
+	}
+
+	c.accessToken = authResponse.Result.AccessToken
+	// 设置过期时间，提前1分钟过期以避免边界情况
+	expiresIn := authResponse.Result.ExpiresIn
+	if expiresIn == 0 {
+		expiresIn = 3600 // 默认1小时
+	}
+	c.tokenExpiresAt = time.Now().Add(time.Duration(expiresIn-60) * time.Second)
+
+	return nil
+}
+
+func (c *Client) isTokenValid() bool {
+	// 检查当前token是否有效
+	c.authMutex.RLock()
+	defer c.authMutex.RUnlock()
+
+	return c.accessToken != "" && time.Now().Before(c.tokenExpiresAt)
+}
+
+func (c *Client) ensureAuthenticated() error {
+	// 如果未认证或token过期则重新认证
+	if c.isTokenValid() {
+		return nil
+	}
+
+	return c.Authenticate()
+}
+
 func (c *Client) GetAccountSummary(currency string) (*types.AccountSummary, error) {
 	endpoint := "/private/get_account_summary"
 	params := map[string]interface{}{
@@ -62,7 +143,7 @@ func (c *Client) GetAccountSummary(currency string) (*types.AccountSummary, erro
 		Error  *APIError            `json:"error"`
 	}
 
-	if err := c.makeRequest("GET", endpoint, params, &response); err != nil {
+	if err := c.makePrivateRequest("GET", endpoint, params, &response); err != nil {
 		return nil, err
 	}
 
@@ -85,7 +166,7 @@ func (c *Client) GetPositions(currency string) ([]interface{}, error) {
 		Error  *APIError     `json:"error"`
 	}
 
-	if err := c.makeRequest("GET", endpoint, params, &response); err != nil {
+	if err := c.makePrivateRequest("GET", endpoint, params, &response); err != nil {
 		return nil, err
 	}
 
@@ -96,8 +177,8 @@ func (c *Client) GetPositions(currency string) ([]interface{}, error) {
 	return response.Result, nil
 }
 
-// GetIndexPrice 获取指数价格 (现货价格)
 func (c *Client) GetIndexPrice(currency string) (float64, error) {
+	// 获取指数价格 (现货价格)
 	endpoint := "/public/get_index_price"
 	params := map[string]interface{}{
 		"index_name": currency + "_usd", // 例如: eth_usd
@@ -110,7 +191,7 @@ func (c *Client) GetIndexPrice(currency string) (float64, error) {
 		Error *APIError `json:"error"`
 	}
 
-	if err := c.makeRequest("GET", endpoint, params, &response); err != nil {
+	if err := c.makePublicRequest("GET", endpoint, params, &response); err != nil {
 		return 0, err
 	}
 
@@ -121,72 +202,85 @@ func (c *Client) GetIndexPrice(currency string) (float64, error) {
 	return response.Result.IndexPrice, nil
 }
 
-func (c *Client) makeRequest(method, endpoint string, params map[string]interface{}, result interface{}) error {
-	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	nonce := timestamp
+func (c *Client) makePublicRequest(method, endpoint string, params map[string]interface{}, result interface{}) error {
+	return c.makeRequest(method, endpoint, params, result, false)
+}
 
-	jsonData, err := json.Marshal(params)
-	if err != nil {
-		return err
+func (c *Client) makePrivateRequest(method, endpoint string, params map[string]interface{}, result interface{}) error {
+	// 确保认证
+	if err := c.ensureAuthenticated(); err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	body := string(jsonData)
-	if method == "GET" && len(params) > 0 {
-		body = ""
-		url := c.baseURL + endpoint + "?"
-		for k, v := range params {
-			url += fmt.Sprintf("%s=%v&", k, v)
-		}
-		url = url[:len(url)-1]
-	}
+	return c.makeRequest(method, endpoint, params, result, true)
+}
 
-	requestData := method + "\n" + endpoint + "\n" + body + "\n"
-	signature := c.generateSignature(timestamp, nonce, requestData)
-
+func (c *Client) makeRequest(method, endpoint string, params map[string]interface{}, result interface{}, isPrivate bool) error {
+	// 构建完整的 URL
+	var fullURL string
 	var req *http.Request
-	if method == "GET" {
-		url := c.baseURL + endpoint
-		if len(params) > 0 {
-			url += "?"
-			for k, v := range params {
-				url += fmt.Sprintf("%s=%v&", k, v)
-			}
-			url = url[:len(url)-1]
+	var err error
+
+	if method == "GET" && len(params) > 0 {
+		fullURL = c.baseURL + endpoint + "?"
+		for k, v := range params {
+			fullURL += fmt.Sprintf("%s=%v&", k, v)
 		}
-		req, err = http.NewRequest(method, url, nil)
+		fullURL = fullURL[:len(fullURL)-1]
+		req, err = http.NewRequest(method, fullURL, nil)
+	} else if method == "GET" {
+		fullURL = c.baseURL + endpoint
+		req, err = http.NewRequest(method, fullURL, nil)
 	} else {
-		req, err = http.NewRequest(method, c.baseURL+endpoint, bytes.NewBuffer(jsonData))
-		req.Header.Set("Content-Type", "application/json")
+		fullURL = c.baseURL + endpoint
+		jsonData, jsonErr := json.Marshal(params)
+		if jsonErr != nil {
+			return fmt.Errorf("failed to marshal params: %w", jsonErr)
+		}
+		req, err = http.NewRequest(method, fullURL, bytes.NewBuffer(jsonData))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 	}
 
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request for %s: %w", fullURL, err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("deri-hmac-sha256 id=%s,ts=%s,nonce=%s,sig=%s",
-		c.apiKey, timestamp, nonce, signature))
+	// 设置认证头
+	if isPrivate {
+		c.authMutex.RLock()
+		token := c.accessToken
+		c.authMutex.RUnlock()
 
+		if token == "" {
+			return fmt.Errorf("access token is required for private requests")
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	// 执行请求
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("HTTP request failed to %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 
+	// 读取响应
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	// 检查 HTTP 状态码
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error: %d, body: %s", resp.StatusCode, string(responseBody))
+		return fmt.Errorf("HTTP error %d for %s: %s", resp.StatusCode, fullURL, string(responseBody))
 	}
 
-	return json.Unmarshal(responseBody, result)
-}
+	// 解析 JSON 响应
+	if err := json.Unmarshal(responseBody, result); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w, body: %s", err, string(responseBody))
+	}
 
-func (c *Client) generateSignature(timestamp, nonce, requestData string) string {
-	message := timestamp + "\n" + nonce + "\n" + requestData
-	h := hmac.New(sha256.New, []byte(c.apiSecret))
-	h.Write([]byte(message))
-	return hex.EncodeToString(h.Sum(nil))
+	return nil
 }

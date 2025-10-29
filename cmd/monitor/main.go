@@ -54,7 +54,7 @@ func main() {
 
 	go func() {
 		if err := monitorService.Start(); err != nil {
-			zapLogger.Fatal("Monitor service failed")
+			zapLogger.Fatal("Monitor service failed", zap.Error(err))
 		}
 	}()
 

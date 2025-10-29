@@ -27,6 +27,13 @@ func NewService(config types.MonitorConfig, deribitClient *deribit.Client, metri
 }
 
 func (s *Service) Start() error {
+	// 首先进行 Deribit API 认证
+	s.logger.Info("Authenticating with Deribit API")
+	if err := s.deribitClient.Authenticate(); err != nil {
+		return fmt.Errorf("failed to authenticate with Deribit: %w", err)
+	}
+	s.logger.Info("Successfully authenticated with Deribit API")
+
 	// 确保间隔时间不为 0，设置最小值为 10 秒
 	interval := s.config.Interval
 	if interval <= 0 {
