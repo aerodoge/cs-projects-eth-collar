@@ -142,7 +142,7 @@ func (m *Metrics) createMetrics() {
 //	timestamp: Unix 时间戳
 func (m *Metrics) UpdateAccountMetrics(currency, account string, mmRatio, ethEquity, ethEquityUSD, totalEquity, maintenanceMargin, marginBalance, ethPriceUSD, requiredETHAmount float64, timestamp int64) {
 	// 创建标签，用于标识不同的货币和账户
-	labels := prometheus.Labels{"currency": currency, "account": account}
+	labels := prometheus.Labels{"currency": currency, "account": account} // 指标级别标签
 
 	// 更新各项指标的值
 	m.MaintenanceMarginRatio.With(labels).Set(mmRatio)         // 设置维持保证金比率
@@ -167,7 +167,7 @@ func (m *Metrics) PushMetrics() error {
 	// 创建 Pusher
 	pusher := push.New(m.config.PushGateway.URL, m.config.PushGateway.JobName).
 		Gatherer(m.registry).
-		Grouping("instance", m.config.PushGateway.Instance)
+		Grouping("instance", m.config.PushGateway.Instance) // PushGateway级别标签
 
 	// 添加额外的标签
 	for key, value := range m.config.PushGateway.Labels {
