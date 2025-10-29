@@ -20,6 +20,7 @@ type Metrics struct {
 	MarginBalance          *prometheus.GaugeVec // 保证金余额指标
 	ETHPriceUSD            *prometheus.GaugeVec // ETH价格指标
 	CollectionTimestamp    *prometheus.GaugeVec // 指标收集时间戳
+	RequiredETHAmount      *prometheus.GaugeVec // 需要补充的ETH数量
 
 	// 配置和推送相关
 	config   types.PrometheusConfig // Prometheus 配置
@@ -103,6 +104,13 @@ func (m *Metrics) createMetrics() {
 		},
 		[]string{"currency", "account"},
 	)
+	m.RequiredETHAmount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "deribit_required_eth_amount",
+			Help: "需要补充的ETH数量（触发告警时）",
+		},
+		[]string{"currency", "account"},
+	)
 
 	// 注册所有指标到自定义注册器
 	m.registry.MustRegister(
@@ -114,6 +122,7 @@ func (m *Metrics) createMetrics() {
 		m.MarginBalance,
 		m.ETHPriceUSD,
 		m.CollectionTimestamp,
+		m.RequiredETHAmount,
 	)
 }
 
@@ -129,8 +138,9 @@ func (m *Metrics) createMetrics() {
 //	maintenanceMargin: 维持保证金
 //	marginBalance: 保证金余额
 //	ethPriceUSD: ETH 现货价格 (美元)
+//	requiredETHAmount: 需要补充的ETH数量
 //	timestamp: Unix 时间戳
-func (m *Metrics) UpdateAccountMetrics(currency, account string, mmRatio, ethEquity, ethEquityUSD, totalEquity, maintenanceMargin, marginBalance, ethPriceUSD float64, timestamp int64) {
+func (m *Metrics) UpdateAccountMetrics(currency, account string, mmRatio, ethEquity, ethEquityUSD, totalEquity, maintenanceMargin, marginBalance, ethPriceUSD, requiredETHAmount float64, timestamp int64) {
 	// 创建标签，用于标识不同的货币和账户
 	labels := prometheus.Labels{"currency": currency, "account": account}
 
@@ -142,6 +152,7 @@ func (m *Metrics) UpdateAccountMetrics(currency, account string, mmRatio, ethEqu
 	m.MaintenanceMargin.With(labels).Set(maintenanceMargin)    // 设置维持保证金
 	m.MarginBalance.With(labels).Set(marginBalance)            // 设置保证金余额
 	m.ETHPriceUSD.With(labels).Set(ethPriceUSD)                // 设置 ETH 现货价格
+	m.RequiredETHAmount.With(labels).Set(requiredETHAmount)    // 设置需要补充的ETH数量
 	m.CollectionTimestamp.With(labels).Set(float64(timestamp)) // 设置指标收集时间戳
 
 	// 自动推送指标到 PushGateway

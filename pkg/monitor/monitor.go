@@ -75,12 +75,19 @@ func (s *Service) checkPositions() error {
 		ethPriceUSD = 3000.0 // 备用价格
 	}
 
-	mmRatio := 0.0 // 维持保证金比率
+	ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
+
+	// 计算维持保证金的美元价值
+	maintenanceMarginUSD := ethSummary.MaintenanceMargin * ethPriceUSD
+
+	// 计算维持保证金比率（用于日志显示）
+	mmRatio := 0.0
 	if ethSummary.Equity != 0 {
-		// 计算维持保证金比率 = 维持保证金 / 权益
 		mmRatio = ethSummary.MaintenanceMargin / ethSummary.Equity
 	}
-	ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
+
+	// 计算需要补充的ETH数量
+	requiredETHAmount := s.calculateRequiredETH(mmRatio, maintenanceMarginUSD, ethSummary.Equity, ethEquityUSD, ethPriceUSD)
 
 	// 记录账户状态信息
 	s.logger.Info("Account status check",
@@ -92,6 +99,7 @@ func (s *Service) checkPositions() error {
 		zap.Float64("margin_balance", ethSummary.MarginBalance),
 		zap.Float64("maintenance_margin", ethSummary.MaintenanceMargin),
 		zap.Float64("mm_ratio", mmRatio),
+		zap.Float64("required_eth_amount", requiredETHAmount),
 	)
 
 	// 更新 Prometheus 指标
@@ -106,8 +114,49 @@ func (s *Service) checkPositions() error {
 		ethSummary.MaintenanceMargin, // 维持保证金
 		ethSummary.MarginBalance,     // 保证金余额
 		ethPriceUSD,                  // ETH 现货价格
+		requiredETHAmount,            // 需要补充的ETH数量
 		timestamp,                    // 时间戳
 	)
 
 	return nil
+}
+
+// calculateRequiredETH 计算需要补充的ETH数量
+func (s *Service) calculateRequiredETH(mmRatio, maintenanceMarginUSD, ethEquity, ethEquityUSD, ethPriceUSD float64) float64 {
+	// 算法1: MM > 50%报警，推送补ETH至MM=30%需要的ETH数量
+	if mmRatio > 0.5 {
+		// 目标维持保证金比率 = 0.3
+		// 0.3 = Current_Total_MM_USD / (Current_Total_Equity_USD + 新增的ETH价值)
+		// 新增的ETH价值 = Current_Total_MM_USD / 0.3 - Current_Total_Equity_USD
+		targetMMRatio := 0.3
+		requiredETHValueUSD := maintenanceMarginUSD/targetMMRatio - ethEquityUSD
+
+		if requiredETHValueUSD > 0 {
+			requiredETHAmount := requiredETHValueUSD / ethPriceUSD
+			s.logger.Warn("MM ratio alert triggered",
+				zap.Float64("current_mm_ratio", mmRatio),
+				zap.Float64("target_mm_ratio", targetMMRatio),
+				zap.Float64("required_eth_amount", requiredETHAmount),
+				zap.Float64("required_eth_value_usd", requiredETHValueUSD),
+			)
+			return requiredETHAmount
+		}
+	}
+
+	// 算法2: ETH equity * ETH spot < -0.7m USD报警，补ETH至 ETH equity = 200
+	// 当ETH equity为负数时，乘以价格得到负的美元价值，表示亏损
+	if ethEquityUSD < -700000 { // -0.7M USD
+		requiredETHAmount := 200 - ethEquity
+		s.logger.Warn("ETH equity loss alert triggered",
+			zap.Float64("current_eth_equity", ethEquity),
+			zap.Float64("current_eth_equity_usd", ethEquityUSD),
+			zap.Float64("target_eth_equity", 200),
+			zap.Float64("required_eth_amount", requiredETHAmount),
+			zap.Float64("loss_threshold_usd", -700000),
+		)
+		return requiredETHAmount
+	}
+
+	// 没有触发告警条件，返回0
+	return 0
 }
