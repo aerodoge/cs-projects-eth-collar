@@ -1,0 +1,34 @@
+deribit:
+  api_key: "YOUR_API_KEY"
+  api_secret: "YOUR_API_SECRET"
+  base_url: "https://www.deribit.com/api/v2"
+  test_net: false
+
+monitor:
+  interval_seconds: 30
+  mm_threshold: 0.5        # 50% MM threshold for alert
+  mm_target: 0.3          # 30% target MM after adding ETH
+  eth_equity_threshold: -700000.0  # -0.7m ETH equity threshold
+  eth_equity_target: 200.0         # Target ETH equity
+
+alerts:
+  enabled: true
+  methods: ["log", "webhook"]
+  webhook:
+    url: "https://your-webhook-url.com/alert"
+  email:
+    smtp: "smtp.gmail.com"
+    port: 587
+    username: "your-email@gmail.com"
+    password: "your-password"
+    from: "your-email@gmail.com"
+    to: "alert-recipient@gmail.com"
+
+log:
+  level: "info"
+  file: "monitor.log"
+
+
+
+
+
