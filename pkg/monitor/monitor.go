@@ -89,9 +89,9 @@ func (s *Service) checkPositions() error {
 	}
 	//ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
 
-	ethEquityUSD := ethSummary.TotalEquityUSD // ETH个数
-	var totalEquityUSD float64                // 所有币Equity之和
-	var totalMaintenanceMarginUSD float64     // 所有币维持保证金之和
+	ethEquityUSD := ethSummary.Equity * ethPriceUSD //ethSummary.TotalEquityUSD // ETH个数
+	var totalEquityUSD float64                      // 所有币Equity之和
+	var totalMaintenanceMarginUSD float64           // 所有币维持保证金之和
 	for _, summary := range accountSummaries.Summaries {
 		if summary.TotalMaintenanceMarginUSD > 0 {
 			totalMaintenanceMarginUSD += summary.TotalMaintenanceMarginUSD
