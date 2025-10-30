@@ -202,6 +202,32 @@ func (c *Client) GetIndexPrice(currency string) (float64, error) {
 	return response.Result.IndexPrice, nil
 }
 
+func (c *Client) GetAccountSummaries(extended ...bool) (*types.AccountSummaries, error) {
+	endpoint := "/private/get_account_summaries"
+	params := map[string]interface{}{}
+
+	// 如果指定了extended参数，则添加到请求中
+	if len(extended) > 0 && extended[0] {
+		params["extended"] = true
+	}
+
+	// 首先尝试解析为完整的AccountSummaries结构
+	var response struct {
+		Result types.AccountSummaries `json:"result"`
+		Error  *APIError              `json:"error"`
+	}
+
+	if err := c.makePrivateRequest("GET", endpoint, params, &response); err != nil {
+		return nil, err
+	}
+
+	if response.Error != nil {
+		return nil, fmt.Errorf("API error: %s (code: %d)", response.Error.Message, response.Error.Code)
+	}
+
+	return &response.Result, nil
+}
+
 func (c *Client) makePublicRequest(method, endpoint string, params map[string]interface{}, result interface{}) error {
 	return c.makeRequest(method, endpoint, params, result, false)
 }

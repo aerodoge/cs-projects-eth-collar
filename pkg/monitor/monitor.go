@@ -60,9 +60,22 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) checkPositions() error {
-	ethSummary, err := s.deribitClient.GetAccountSummary("ETH")
+	// 获取整个账户的摘要信息
+	accountSummaries, err := s.deribitClient.GetAccountSummaries()
 	if err != nil {
-		return fmt.Errorf("failed to get ETH account summary: %w", err)
+		return fmt.Errorf("failed to get account summaries: %w", err)
+	}
+
+	// 查找ETH货币的摘要
+	var ethSummary *types.CurrencySummary
+	for i := range accountSummaries.Summaries {
+		if accountSummaries.Summaries[i].Currency == "ETH" {
+			ethSummary = &accountSummaries.Summaries[i]
+			break
+		}
+	}
+	if ethSummary == nil {
+		return fmt.Errorf("ETH currency summary not found in account summaries")
 	}
 
 	// 计算指标数据
@@ -74,30 +87,39 @@ func (s *Service) checkPositions() error {
 		s.logger.Error("Failed to get ETH price, using fallback", zap.Error(err))
 		ethPriceUSD = 3000.0 // 备用价格
 	}
+	//ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
 
-	ethEquityUSD := ethSummary.Equity * ethPriceUSD // 计算 ETH 权益的美元价值
+	ethEquityUSD := ethSummary.TotalEquityUSD // ETH个数
+	var totalEquityUSD float64                // 所有币Equity之和
+	var totalMaintenanceMarginUSD float64     // 所有币维持保证金之和
+	for _, summary := range accountSummaries.Summaries {
+		if summary.TotalMaintenanceMarginUSD > 0 {
+			totalMaintenanceMarginUSD += summary.TotalMaintenanceMarginUSD
+			totalEquityUSD = summary.TotalEquityUSD
+			break
+		}
+	}
 
-	// 计算维持保证金的美元价值
-	maintenanceMarginUSD := ethSummary.MaintenanceMargin * ethPriceUSD
-
-	// 计算维持保证金比率（用于日志显示）
+	// 计算正确的维持保证金比率：整个账户的维持保证金 / 整个账户的总权益
 	mmRatio := 0.0
-	if ethSummary.Equity != 0 {
-		mmRatio = ethSummary.MaintenanceMargin / ethSummary.Equity
+	if totalEquityUSD != 0 {
+		mmRatio = totalMaintenanceMarginUSD / totalEquityUSD
 	}
 
 	// 计算需要补充的ETH数量
-	requiredETHAmount := s.calculateRequiredETH(mmRatio, maintenanceMarginUSD, ethSummary.Equity, ethEquityUSD, ethPriceUSD)
+	requiredETHAmount := s.calculateRequiredETH(mmRatio, totalMaintenanceMarginUSD, totalEquityUSD, ethSummary.Equity, ethEquityUSD, ethPriceUSD)
 
 	// 记录账户状态信息
 	s.logger.Info("Account status check",
 		zap.String("currency", "ETH"),
 		zap.String("account", s.config.Account),
 		zap.Float64("eth_price_usd", ethPriceUSD),
-		zap.Float64("equity", ethSummary.Equity),
-		zap.Float64("equity_usd", ethEquityUSD),
-		zap.Float64("margin_balance", ethSummary.MarginBalance),
-		zap.Float64("maintenance_margin", ethSummary.MaintenanceMargin),
+		zap.Float64("eth_equity", ethSummary.Equity),
+		zap.Float64("eth_equity_usd", ethEquityUSD),
+		zap.Float64("eth_margin_balance", ethSummary.MarginBalance),
+		zap.Float64("eth_maintenance_margin", ethSummary.MaintenanceMargin),
+		zap.Float64("total_maintenance_margin_usd", totalMaintenanceMarginUSD),
+		zap.Float64("total_equity_usd", totalEquityUSD),
 		zap.Float64("mm_ratio", mmRatio),
 		zap.Float64("required_eth_amount", requiredETHAmount),
 	)
@@ -122,20 +144,23 @@ func (s *Service) checkPositions() error {
 }
 
 // calculateRequiredETH 计算需要补充的ETH数量
-func (s *Service) calculateRequiredETH(mmRatio, maintenanceMarginUSD, ethEquity, ethEquityUSD, ethPriceUSD float64) float64 {
+// 这个函数需要从外部传入总账户的维持保证金和权益信息
+func (s *Service) calculateRequiredETH(mmRatio, totalMaintenanceMarginUSD, totalEquityUSD, ethEquity, ethEquityUSD, ethPriceUSD float64) float64 {
 	// 算法1: MM > 50%报警，推送补ETH至MM=30%需要的ETH数量
 	if mmRatio > 0.5 {
 		// 目标维持保证金比率 = 0.3
-		// 0.3 = Current_Total_MM_USD / (Current_Total_Equity_USD + 新增的ETH价值)
-		// 新增的ETH价值 = Current_Total_MM_USD / 0.3 - Current_Total_Equity_USD
+		// 0.3 = Total_MM_USD / (Total_Equity_USD + 新增的ETH价值)
+		// 新增的ETH价值 = Total_MM_USD / 0.3 - Total_Equity_USD
 		targetMMRatio := 0.3
-		requiredETHValueUSD := maintenanceMarginUSD/targetMMRatio - ethEquityUSD
+		requiredETHValueUSD := totalMaintenanceMarginUSD/targetMMRatio - totalEquityUSD
 
 		if requiredETHValueUSD > 0 {
 			requiredETHAmount := requiredETHValueUSD / ethPriceUSD
 			s.logger.Warn("MM ratio alert triggered",
 				zap.Float64("current_mm_ratio", mmRatio),
 				zap.Float64("target_mm_ratio", targetMMRatio),
+				zap.Float64("total_maintenance_margin_usd", totalMaintenanceMarginUSD),
+				zap.Float64("total_equity_usd", totalEquityUSD),
 				zap.Float64("required_eth_amount", requiredETHAmount),
 				zap.Float64("required_eth_value_usd", requiredETHValueUSD),
 			)
