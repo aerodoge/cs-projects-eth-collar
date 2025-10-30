@@ -1,7 +1,7 @@
 # Deribit Position Monitor Makefile
 
 # 变量定义
-APP_NAME = monitor
+APP_NAME = eth-collar-monitor
 BUILD_DIR = build
 BINARY = $(BUILD_DIR)/$(APP_NAME)
 CONFIG_FILE = conf/config.yaml
